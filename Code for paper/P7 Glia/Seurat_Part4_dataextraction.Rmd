@@ -1,0 +1,287 @@
+---
+title: "Seurat_Part4_dataextraction"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## R Markdown
+
+```{r}
+source("https://bioconductor.org/biocLite.R")
+#biocLite("BiocUpgrade")
+biocLite("digest")
+#biocLite("ggplot2")
+#biocLite("DESeq2")
+#biocLite("zoo")
+#biocLite("Seurat")
+library(Seurat)
+dir<-"Volumes/Eythora/backup/singlecelljuly2018/Pilot2018"
+setwd(dir)
+library(ggplot2)
+filename<-"yourfilename_Part3.RData"
+load(file=filename)
+experiment.aggregate
+```
+
+Build a cluster tree, and look at the relative location of each cluster. 
+```{r}
+experiment.aggregate <- SetAllIdent(experiment.aggregate, id = "finalcluster")
+use.pcs=20
+experiment.aggregate<- BuildClusterTree(
+  experiment.aggregate,
+  pcs.use = use.pcs,
+  do.reorder = F,
+  reorder.numeric = F,
+  do.plot=F)
+PlotClusterTree(experiment.aggregate, cex=1, use.edge.length=F,node.depth=2)
+table(experiment.aggregate@ident)
+table(experiment.aggregate@meta.data$MouseID,experiment.aggregate@meta.data$finalcluster)
+```
+Based on the tree above, you can combine neighboring clusters. 
+```{r}
+Rename_Multiple<-function(object, oldnames, newnames,index=1:length(oldnames)){
+        for (i in index){
+                object<-RenameIdent(
+                        object=object,
+                        old.ident.name = oldnames[i],
+                        new.ident.name = newnames[i])
+        }
+        object
+}
+experiment.aggregate <- SetAllIdent(experiment.aggregate, id = "finalclusters")
+oldcluster<-c("microglia-8")
+newcluster<-c("microglia-4")
+experiment.aggregate<-Rename_Multiple(experiment.aggregate,oldcluster,newcluster)
+experiment.aggregate <- AddMetaData(
+  object = experiment.aggregate,
+  metadata = experiment.aggregate@ident, #make a new metadata column containing the final set of clusters as shown in @ident
+  col.name = "finalcluster")
+table(experiment.aggregate@meta.data$finalcluster)
+```
+Find markers for the new clusters (with names)
+
+```{r}
+markers_all <- FindAllMarkers(
+    object = experiment.aggregate, 
+    only.pos = TRUE, 
+    min.pct = 0.25, #gene must be present in 25% of the cells in the cluster
+    logfc.threshold = 0.25
+)
+dim(markers_all)
+head(markers_all)
+write.csv(markers_all,"RNUMIallmarkerssortonllowfilternobatch.csv")
+table(table(markers_all$gene)) #basically a histogram of how many genes are present in how many clusters
+
+markers_all_single <- markers_all[markers_all$gene %in% names(table(markers_all$gene))[table(markers_all$gene) == 1],] #markers that define a single cluster
+write.csv(markers_all_single,"RNUMIsinglemarkerssortonllowfilternobatch.csv")
+dim(markers_all_single)
+table(table(markers_all_single$gene))
+
+table(markers_all_single$cluster)
+
+head(markers_all_single)
+```
+Get means of each marker gene per cluster (in the cluster, out of the cluster)
+```{r}
+getGeneClusterMeans <- function(gene, cluster){
+  x <- experiment.aggregate@data[gene,]
+  m <- tapply(x, ifelse(experiment.aggregate@ident == cluster, 1, 0), mean)
+  mean.in.cluster <- m[2]
+  mean.out.of.cluster <- m[1]
+  return(list(mean.in.cluster = mean.in.cluster, mean.out.of.cluster = mean.out.of.cluster))
+}
+
+## for sake of time only using first six (head)
+means <- mapply(getGeneClusterMeans, markers_all[,"gene"], markers_all[,"cluster"])
+means <- matrix(unlist(means), ncol = 2, byrow = T)
+
+colnames(means) <- c("mean.in.cluster", "mean.out.of.cluster")
+markers_all2 <- cbind(markers_all, means)
+head(markers_all2)
+write.csv(markers_all2,"markers_all_numiregress_names_nobatch.csv")
+```
+
+
+
+Adding in a new metadata column representing samples within clusters
+
+```{r}
+samplecluster = paste(experiment.aggregate@meta.data$orig.ident,experiment.aggregate@meta.data$finalcluster,sep = '-')
+mouseIDfull = paste(experiment.aggregate@meta.data$orig.ident, experiment.aggregate@meta.data$MouseID)
+
+names(mouseIDfull) = rownames(experiment.aggregate@meta.data)
+names(samplecluster) = rownames(experiment.aggregate@meta.data)
+
+head(samplecluster) # tells you the cells in each sample in each cluster
+
+experiment.aggregate <- AddMetaData( 
+  object = experiment.aggregate,
+  metadata = samplecluster,
+  col.name = "samplecluster")
+
+experiment.aggregate <- AddMetaData( 
+  object = experiment.aggregate,
+  metadata = mouseIDfull,
+  col.name = "mouseIDfull")
+ 
+```
+
+Subsetting samples - could extract a particular cluster using your new metadata column
+```{r}
+subset="yourchosencelltype"
+experiment.subset<- SubsetData(
+  object = experiment.aggregate,
+  subset.raw=T,
+  do.clean=T, #do.clean removes things like scaledata, tsne, pca so that you can recalculate them below
+  cells.use = rownames(experiment.aggregate@meta.data)[experiment.aggregate@meta.data$celltype %in% subset])
+
+experiment.subset <- FindVariableGenes(
+  object = experiment.subset,
+  mean.function = ExpMean,
+  dispersion.function = LogVMR,
+  x.low.cutoff = 0.125,
+  x.high.cutoff = 5,
+  y.cutoff = 0.25, do.plot=T) #1468 genes
+
+length(experiment.subset@var.genes)
+
+experiment.subset <- ScaleData(
+  object = experiment.subset,
+  genes.use=experiment.subset@var.genes)
+
+experiment.subset <- RunPCA(
+  object = experiment.subset,
+  pc.genes = experiment.subset@var.genes,
+  do.print = TRUE,
+  pcs.print = 1:5,
+  genes.print = 5,
+  pcs.compute = 40,
+  maxit = 500)
+
+PrintPCAParams(experiment.subset)
+  
+PCElbowPlot(
+  experiment.subset,
+  num.pc = 40)
+  
+use.pcs = 1:20 #set to whatever you chose from the previous section
+
+#will take a long time to run
+experiment.subset <- FindClusters(
+    object = experiment.subset, 
+    reduction.type = "pca", 
+    dims.use = use.pcs, 
+    resolution = seq(0.5,4,0.5), #pick multiple resolutions; smaller = fewer clusters seq(0.5,4,0.5), #
+    print.output = FALSE, 
+    save.SNN = TRUE,
+    force.recalc = TRUE
+)
+PrintFindClustersParams(object = experiment.subset)
+
+
+sapply(grep("^res",colnames(experiment.subset@meta.data),value = TRUE),
+       function(x) length(unique(experiment.subset@meta.data[,x])))
+
+experiment.subset <- SetAllIdent(experiment.subset, id = "res.1.5") #assign a cluster ID to each cell; to color with higher resolution, change this id to the resolution you care about
+
+table<-table(experiment.subset@ident,experiment.subset@meta.data$orig.ident)
+depvctrl<-table[,1]/table[,2]
+table<-cbind(table,depvctrl)
+table
+total<-table(experiment.subset@meta.data$orig.ident)
+ratio<-total[1]/total[2]
+names(ratio)<-"expected"
+ratio<-rep(ratio,length(depvctrl))
+clusterbias<-as.data.frame(cbind(table,ratio))
+
+bias<-function(table){
+  bias<-rep("no",nrow(table))
+  for (i in 1:nrow(table)){
+    bias[i]="Both"
+    if (table[i,3]>2*table[i,4]){
+      bias[i]="Dep"
+    }
+    else if (table[i,3]<table[i,4]/2){
+      bias[i]="Ctrl"
+    }
+  }
+  table<-cbind(table,bias)
+}
+
+#assign cluster identities based on ratio
+clusterbias<-bias(clusterbias)
+clusterbias
+clusterbias[,c(3,5)]
+clusterid<-experiment.subset@ident
+levels(clusterid)<-clusterbias$bias
+cellbias<-clusterid
+experiment.subset <- AddMetaData(
+        object = experiment.subset,
+        metadata = cellbias,
+        col.name= "bias")
+table(experiment.subset@meta.data$bias,experiment.subset@meta.data$orig.ident)
+
+experiment.subset <- RunTSNE(
+  object = experiment.subset,
+  reduction.use = "pca",
+  dims.use = use.pcs,
+  seed.use=10)
+TSNEPlot(object = experiment.subset, pt.size=0.5,do.label=T)
+TSNEPlot(object = experiment.subset, group.by="orig.ident", pt.size=0.5)
+experiment.subset<- BuildClusterTree(
+  experiment.subset,
+  pcs.use = use.pcs,
+  do.reorder = F,
+  reorder.numeric = F,
+  do.plot=T)
+#edit names as needed
+oldnames<-c("0","1","2","3","4","5","6")
+newnames<-c("Dep-1","Both-1","Both-2","Dep-2","Ctrl-1","Ctrl-2","Dep-3")
+PlotClusterTree(experiment.subset, cex=1, use.edge.length=F,node.depth=2)
+Rename_Multiple<-function(object, oldnames, newnames,index=1:length(oldnames)){
+        for (i in index){
+                object<-RenameIdent(
+                        object=object,
+                        old.ident.name = oldnames[i],
+                        new.ident.name = newnames[i])
+        }
+        object
+}
+experiment.subset<-Rename_Multiple(experiment.subset,oldnames,newnames)
+save(experiment.subset,file="subset.RData")
+```
+
+
+
+#rownames(experiment.aggregate@meta.data) are cells
+#TSNEPlot(object = experiment.sort_contra, group.by="ident", pt.size=0.5, do.label = F)
+
+#FeaturePlot(experiment.sort_contra, features.plot=c('Sparcl1'), pt.size=0.5)
+#FeaturePlot(experiment.sort_contra, features.plot=c('Sparc'), pt.size=0.5)
+
+
+
+```{r}
+
+table(experiment.subset@meta.data$bias,experiment.subset@meta.data$celltype)
+
+#TSNEPlot(object = experiment.sort_ipsi, group.by="ident", pt.size=0.5, do.label = F)
+
+#FeaturePlot(experiment.sort_ipsi, features.plot=c('Sparcl1'), pt.size=0.5)
+#FeaturePlot(experiment.sort_ipsi, features.plot=c('Sparc'), pt.size=0.5)
+```
+
+
+```{r}
+filename<-"yournamehere_Part4.RData"
+save(list=ls(),file=filename)
+```
+
+```{r}
+sessionInfo()
+```
+
