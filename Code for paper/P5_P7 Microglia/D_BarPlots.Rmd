@@ -1,0 +1,140 @@
+---
+title: "Plots"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages("BiocManager")
+#BiocManager::install("Seurat")
+#BiocManager::install("ggplot2")
+#BiocManager::install("sctransform")
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(ape)
+library(cowplot)
+library(Matrix)
+library(EnhancedVolcano)
+library(knitr)
+library(readr)
+
+#find out where you are
+getwd()
+
+#Specify where your matrix files are
+dir= "/Users/whippoorwill/Desktop/Sequencing/LD_AVM02/"
+datafolder = "Data/Seurat"
+filename = "Microglia_BC_Macrophages_subset.RData"
+organism = "Mouse"
+defile = "Macrophage_only_all_markers.csv"
+cellcyclefile = "https://raw.githubusercontent.com/lcdorman/scrnaseq/master/Spreadsheets/regev_lab_cell_cycle_genes.csv"
+
+m = c("nCount_RNA","nFeature_RNA","percent.mito","percent.ribo")
+Plotfolder = "Plots"
+
+if(organism == "Mouse"){library(org.Mm.eg.db)}
+if(organism == "Human"){library(org.Hs.eg.db)}
+if(organism == "Zebrafish"){library(org.Dr.eg.db)}
+```
+Load in your filtered dataset
+```{r}
+load(file.path(dir,datafolder,filename))
+```
+
+Barplot for any two (or more) categories
+
+```{r}
+#Pick metadata columns
+clustercolumn = "finalclusters"
+samplecolumn = "Phase"
+#pick a reasonable number of cells per sample to normalize by
+ncells = 2000 
+cols = c("chocolate","purple","green")
+#If you want to only compare particular samples/conditions, split further by another metadata column: 
+split = "condition"
+name = paste0(Project(sobject),"barplot")
+```
+
+
+```{r}
+splitby = levels(as.factor(sobject[[split]][,1]))
+splitby = splitby[splitby != "13"]
+
+#Make a table and normalize
+r = table(sobject[[clustercolumn]][,1],sobject[[samplecolumn]][,1])
+
+#Split the table
+for (i in splitby){
+  x = grep(i,rownames(r))
+  t = r[x,]
+  #remove any clusters that don't have cells
+  t = t[rowSums(t)>0,]
+  
+  #normalize by sample
+  t = apply(t,MARGIN = 2,function(x)x/sum(x))
+  t = round(t*ncells,0)
+  
+  #convert to percents for each cluster
+  t = apply(t,MARGIN = 1,function(x)x/sum(x))
+  t = round(t*100,2)
+  
+  setEPS()
+  postscript(file.path(dir,"Plots",paste0(name,"phase","barplot.eps")))
+  barplot(t, main="Cluster composition by percent of celltype",
+        xlab="Cluster", ylab = "% of cluster", ylim = c(0,100), col=cols,axisnames = T,
+        width = .2,xlim = c(0,3),legend = rownames(t), space = 0.6,cex.names = 0.8,axis.lty = 1)
+  dev.off()
+  print(barplot(t, main="Cluster composition by percent of celltype",
+        xlab="Cluster", ylab = "% of cluster", ylim = c(0,100), col=cols,axisnames = T,
+        width = .2,xlim = c(0,3),legend = rownames(t), space = 0.6,cex.names = 0.8,axis.lty = 1))
+
+}
+```
+
+ Contingency tables for barplots. Note that this makes more sense if done with only 2 samples, as only one statistic will be calculated per cluster. 
+ 
+```{r}
+clustercolumn = "finalclusters"
+samplecolumn = c("sample_description")
+```
+
+```{r}
+all = table(sobject[[clustercolumn]][,1],sobject[[samplecolumn]][,1])
+all = all[,c(1,3)]
+array = as.data.frame(cbind("Cluster" = 1, "Sample1" = 1, "Sample2" = 1, "p-value" = 1, "Cramer's V" =1))
+for (i in 1:(ncol(all)-1)){
+  for (k in (i+1):ncol(all)){
+    partial = all[,c(i,k)]
+    total = colSums(partial)
+    clusters = rownames(partial)
+    test = list()
+    chi = chisq.test(partial)
+
+    for (cluster in clusters){
+      x = rbind(partial[cluster,],total-partial[cluster,])
+      rownames(x) = c(cluster,"total")
+      chi = chisq.test(x)
+      f = sqrt(chi$statistic/sum(x))
+      test[[cluster]] = chi
+      test[[cluster]]$f = f
+      
+      pval = test[[cluster]]$p.value
+      Cramer = sqrt(test[[cluster]]$statistic/sum(all[cluster,]))
+      out = c(cluster,colnames(partial),pval,Cramer)
+      #print out the p-value and cramer's v (closer to 1 = higher effect size) for each cluster
+      array = rbind(array,out)
+    }
+  }
+}
+array = array[2:nrow(array),]
+
+array$bonferroni = as.numeric(array$`p-value`)*8
+array
+write.csv(array,file = file.path(dir,"Plots",paste0(name,"P5_contingency.csv")),row.names = T,quote = F)
+```
+ 

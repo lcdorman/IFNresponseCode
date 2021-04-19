@@ -1,0 +1,144 @@
+---
+title: "Plots"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,results = "hide"}
+#install.packages("BiocManager")
+#BiocManager::install("Seurat")
+#BiocManager::install("ggplot2")
+#BiocManager::install("sctransform")
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(ape)
+library(cowplot)
+library(Matrix)
+library(EnhancedVolcano)
+library(knitr)
+library(readr)
+
+#find out where you are
+getwd()
+
+#Specify where your matrix files are
+dir= "/Users/whippoorwill/Desktop/Sequencing/LD_AVM02/"
+datafolder = "Data/Seurat"
+filename = "Microglia_BC_Macrophages_subset.RData"
+organism = "Mouse"
+defile = "Macrophage_only_all_markers.csv"
+cellcyclefile = "https://raw.githubusercontent.com/lcdorman/scrnaseq/master/Spreadsheets/regev_lab_cell_cycle_genes.csv"
+
+m = c("nCount_RNA","nFeature_RNA","percent.mito","percent.ribo")
+Plotfolder = "Plots"
+genesofinterest = c("Pcna","Top2a","Mcm6","Mki67")
+name = "LD_Macrophage_only"
+
+if(organism == "Mouse"){library(org.Mm.eg.db)}
+if(organism == "Human"){library(org.Hs.eg.db)}
+if(organism == "Zebrafish"){library(org.Dr.eg.db)}
+```
+Load in your filtered dataset and cell cycle genes
+```{r}
+load(file.path(dir,datafolder,filename))
+cc.genes <- as.character(read.csv(cellcyclefile)[,1])
+```
+
+
+You can find what phase of the cell cycle each cell is in: 
+
+Cell cycle regression specifically for mouse genes right now - can adjust slightly for human/zebrafish data by changing the capitalization of the spreadsheet
+
+```{r}
+#for zebrafish and mice, change gene names to lowercase
+if (organism %in% c("Zebrafish","Mouse")){cc.genes<-tolower(cc.genes)}
+
+#for mice, capitalize the first letter of each gene
+if (organism == "Mouse"){
+  cc.genes<-unname(sapply(cc.genes,function(x){
+    x<-paste0(toupper(substr(x,start = 1,stop = 1)),substring(x,first=2))
+    }))
+}
+
+#assign each gene to "S" phase or "G2M" phase
+s.genes <- cc.genes[1:43]
+g2m.genes <- cc.genes[44:97]
+
+#score each cell by gene expression on this subset of genes
+sobject <- CellCycleScoring(object = sobject, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+# view cell cycle scores and phase assignments
+head(x = sobject@meta.data)
+RidgePlot(object = sobject, features = genesofinterest)
+FeaturePlot(sobject,"S.Score")
+FeaturePlot(sobject,"G2M.Score")
+
+#save phase plot
+setEPS()
+postscript(file.path(dir,"Plots",paste0(name,"_phasechart.eps")))
+DimPlot(sobject,group.by = "Phase")
+dev.off()
+```
+
+
+```{r,eval = FALSE}
+#save seurat object with cell cycle scoring
+save(sobject,file = file.path(dir,datafolder,filename)))
+```
+
+
+You can regress out the phase genes
+```{r}
+regress = c("S.Score","G2M.Score","nCount_RNA","percent.mito")
+columns = c("sample_description","seurat_clusters","celltypecluster","condition","age","Phase")
+```
+
+
+```{r,eval = FALSE}
+#run PCA on only the cell cycle genes
+sobject2 <- RunPCA(object = sobject, pc.genes = c(s.genes, g2m.genes), do.print = FALSE, maxit=10000)
+
+#cell cycle only
+PCAPlot(object = sobject2)
+
+#original
+PCAPlot(object = sobject)
+
+#regress out cell cycle variables
+sobject2 <- ScaleData(object = sobject2, features = VariableFeatures(sobject), vars.to.regress = regress)
+
+# Now, a PCA on the variable genes no longer returns components associated
+# with cell cycle
+sobject2 <- RunPCA(object = sobject2, features = VariableFeatures(sobject), genes.print = 10)
+PCAPlot(object = sobject2)
+
+#remake umap with new calculations without cell cycle
+sobject2@reductions$UMAP<-NULL
+sobject2<-RunUMAP(sobject2,reduction = "pca",dims = 1:30, verbose = F)
+sobject2<-FindNeighbors(sobject2,dims=1:30,verbose=F)
+set.seed(1)
+sobject2<-FindClusters(sobject2,verbose=F,resolution = 0.5)
+```
+
+```{r,eval = F}
+load(file.path(dir,datafolder, paste0(name,"_cellcycleregressed.RData")))
+```
+
+```{r,eval = F}
+#make plots without cell cycle
+for (column in columns){
+  print(DimPlot(object = sobject2, group.by=column, pt.size=0.5,label = T))
+}
+```
+
+
+```{r,eval = FALSE}
+#save seurat object with cell cycle scoring
+save(sobject2,file = file.path(dir,datafolder,paste0(name,"_cellcycleregressed.RData")))
+```
+
