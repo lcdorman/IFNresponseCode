@@ -1,0 +1,498 @@
+---
+title: "Seurat_Part1_prenorm"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+First initialize biocManager and Seurat, and walk into your directory. If you have not yet installed Seurat and ggplot2, you will need to un-hash out the biocManager commands below. 
+
+```{r}
+#install.packages("BiocManager")
+
+#BiocManager::install("Seurat")
+#BiocManager::install("ggplot2")
+#BiocManager::install("sctransform")
+
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+dir<-"~/Desktop" #set this to whatever you like, above the level of your data folder
+setwd(dir)
+```
+
+Tell yourself where the files are 
+
+```{r}
+dataset_loc<-file.path("~/Desktop/Sequencing/LD_RNASeq2018/Data")
+```
+
+Then create an object with the folder names that you can use to open each sample folder when you need it
+```{r}
+sample1<-"sort_ipsi"
+sample2<-"sort_contra"
+ids <-c(sample1,sample2)
+```
+
+For each ID (i.e. folder), read in the data (stored in mm10) and change the colnames as follows:
+
+split the colnames that already exist into a list; then remove anything after "-" (split), then extract only the first element ('[[', index = 1L), then paste the ID to each colname (gene) separated by "-". Return d10x. Repeat for each id. 
+
+```{r}
+d10x.data <- sapply(ids, function(i){
+        d10x <- Read10X(file.path(dataset_loc, i)) #read in the file for id[i]
+        colnames(d10x) <- paste(sapply(strsplit(colnames(d10x),split="-"),'[[',1L),i,sep="-") 
+        d10x
+})
+
+```
+
+The d10x.data list object contains a set of lists whose columns consist of cell IDs and whose rows represent genes. 
+Make experiment.data into an array with each element of d10x.data (which is a list) as columns (as many columns as cells per sample)
+This creates a new array that contains all of the cells and genes from d10x.data but puts them in one list instead of 3. 
+
+```{r}
+experiment.data<-do.call("cbind",d10x.data)
+```
+
+"aggregate" the data which cellRanger does but not well. Create a seurat object, keeping genes that are in >3 cells, cells with >50 genes (you can always set these to zero and filter later)
+
+```{r}
+project<-"LD1_v3" #Name this anything you want
+LD1 <- CreateSeuratObject(
+        experiment.data,
+        project = project, 
+        min.cells = 1,
+        min.features = 1,
+        names.field = 2,
+        names.delim = "\\-")
+
+#You can add metadata here using metadata = ""
+```
+
+Calculate mitochondrial content, add as metadata to each cell (column). Percent mito is literally dividing one matrix by another matrix to get a percentage. Grep searches through rownames of the data (i.e. genes) for anything that starts with mt. 
+
+```{r}
+LD1 <- PercentageFeatureSet(LD1, pattern = "^mt-", col.name = "percent.mito")
+```
+
+
+Extract the sampleIDs which are stored in "orig.ident". The numbers are numbers of cells (columns). Orig.ident is defined by the file from which the data was isolated. 
+
+```{r}
+samplename = LD1$orig.ident
+table(samplename)
+```
+
+add sample descriptions to the column (cell) names for each sample. if you call a name of a cell you can see which sample it's from
+
+```{r}
+description1<-"Control"
+description2<-"Deprived"
+
+sample_description = rep(description1,length(samplename)) #repeat description for each cell in all samples
+sample_description[samplename %in% sample2] = description2 #every index for a sample2 cell gets this name
+
+
+names(sample_description) = rownames(LD1@meta.data) #the rownames of meta.data are the cellIDs. Now you have named each ordered sample description with its own cellIDs (this works because we pulled both samplename and the rownames from the same meta.data matrix and never re-ordered it)
+table(sample_description)
+```
+
+add the names into your metadata for each cell
+```{r}
+LD1$sample_description<-sample_description
+```
+
+different ways to view the aggregated data
+
+```{r}
+table(LD1$sample_description,LD1$orig.ident)
+```
+
+```{r}
+slotNames(LD1)
+```
+
+find out whether they are full or empty
+```{r}
+str(LD1,max.level = 2)
+```
+
+```{r}
+head(LD1@meta.data)
+```
+
+Save the data up to this point if you want to: 
+```{r}
+#write.table(as.matrix(experiment.data),"raw.sortonly_datatable.txt",sep="\t",col.names=T,row.names=T)
+```
+
+```{r}
+#filename<="yourfilenamehere_part1.RData"
+#save(LD1,file=filename)
+```
+```{r}
+sessionInfo()
+```
+part 2: quality control
+```{r}
+#load(file=filename)
+LD1
+```
+
+QC - decide on final filtering parameters, look for clear outliers/differences between samples. These are quantiles of cells. Also shows you the variability between cells (and between samples)
+5% quantiles for number of genes per cell per sample - nGene is in the metadata for each cell, run quantiles on each sample from 0-1 in increments of 0.05
+
+i.e. 50th percentile of cells have about 2000 genes per cell per sample for sorted cells
+        -did the unsorted samples run correctly? these are very low gene counts and extremely low UMI/gene ratios. Also they have high percentages of mitochondrial genes. 
+
+Show 5% quantiles for number of UMI per cell per sample
+```{r}
+do.call("cbind", tapply(LD1$nCount_RNA,LD1$sample_description,quantile,probs=seq(0,1,0.05)))
+do.call("cbind", tapply(LD1$nFeature_RNA,LD1$sample_description,quantile,probs=seq(0,1,0.05)))
+round(do.call("cbind", tapply(LD1$percent.mito,LD1$sample_description,quantile,probs=seq(0,1,0.05))), digits = 3)
+```
+Show 5% quantiles for mitochondrial genes. Note the large gap between 95%, 100% - maybe filter the top 5% of mt high-expressing cells. But you need to think about what those cells are really doing. Are they dead? Highly active/reactive? 
+
+
+Plot the number of cells each gene is represented by - i.e. how many cells express any given gene? Ordered from rare to common genes. So you might consider focusing on genes that are relatively well expressed across the sample, or you might care about genes expressed only in a small subset of cells. The >=2 refers to read number per cell. 
+```{r}
+plot(sort(Matrix::rowSums(GetAssayData(LD1)>=2)),xlab="gene rank",ylab="number of cells",main="Cells per genes ( >= 2 )")
+#median(rowSums(GetAssayData(LD1)>=2))
+```
+Violin plot of 1) number of genes, 2) number of UMI and 3) percent mitochondrial genes
+```{r}
+VlnPlot(
+  LD1,
+  c("nCount_RNA","nFeature_RNA","percent.mito"),
+  pt.size = 0.2)
+
+
+```
+
+Gene Plot, scatter plot of gene expression across cells, (colored by sample) - sequencing depth relative to genes; looking for similarity across samples. Some cell types can have relatively few genes, but highly expressed, could show up as a second arc below the one seen here (should contain all samples though)
+```{r}
+FeatureScatter(
+  LD1, "nCount_RNA", "nFeature_RNA")
+
+FeatureScatter(
+  LD1_unfiltered, "nCount_RNA", "percent.mito") + geom_vline(xintercept = chi, linetype = "dashed",color = "red", size = .8) +geom_vline(xintercept = clo, linetype = "dashed",color = "black", size = .8) +geom_abline(intercept = mhi, slope = 0, linetype = "dashed",color = "red", size = .8)
+
+FeatureScatter(object=LD1,"nFeature_RNA","percent.mito")
+
+```
+
+
+
+
+Filtering cells: note that they are taking these filters and duplicating them across all samples. Use -Inf instead of 0 because not all the filters have to be positive values, and to avoid any errors due to truncation. 
+
+How to select filters??? noise vs signal - get them from the violin plots and the matrix, capture the bulk of cells but exclude outliers (say with mtDNA filter) - can also look at percentiles, maybe get rid of top 5% since it was very different from the rest. Basically eliminate outliers and don't include cells that have hardly any genes or have a ton of genes expressed
+
+```{r}
+
+table(LD1$sample_description)
+cells = as.factor(LD1$sample_description)
+levels(cells) = c("Cells","Cells")
+table(cells)
+LD1$cells = cells
+mlo=-Inf
+mhi=5
+glo=400
+ghi=5000
+LD1_unfiltered = LD1
+LD1 <- subset(LD1, subset = percent.mito>mlo & percent.mito < mhi)
+LD1 <- subset(LD1, subset = nFeature_RNA>glo & nFeature_RNA < ghi)
+
+
+
+```
+```{r}
+setEPS()
+postscript("nFeature.eps")
+VlnPlot(
+  LD1_unfiltered,group.by = "cells",
+  features = c("nFeature_RNA"), pt.size = 0.1) + geom_abline(intercept = ghi, slope = 0, linetype = "dashed",color = "red", size = .8) + geom_abline(intercept = glo, slope = 0, linetype = "dashed",color = "black", size = .8)
+dev.off()
+
+setEPS()
+postscript("nFeature_bysample.eps")
+VlnPlot(
+  LD1_unfiltered,group.by = "sample_description",
+  features = c("nFeature_RNA"), pt.size = 0.1) + geom_abline(intercept = ghi, slope = 0, linetype = "dashed",color = "red", size = .8) + geom_abline(intercept = glo, slope = 0, linetype = "dashed",color = "black", size = .8)
+dev.off()
+
+setEPS()
+postscript("pctmito.eps")
+VlnPlot(
+  LD1_unfiltered,group.by = "cells",
+  features = c("percent.mito"), pt.size = 0.1,log = F) + geom_abline(intercept = mhi, slope = 0, linetype = "dashed",color = "red", size = .8)+ geom_abline(intercept = mlo, slope = 0, linetype = "dashed",color = "black", size = .8)
+dev.off()
+
+setEPS()
+postscript("pctmito_bysample.eps")
+VlnPlot(
+  LD1_unfiltered,group.by = "sample_description",
+  features = c("percent.mito"), pt.size = 0.1,log = F) + geom_abline(intercept = mhi, slope = 0, linetype = "dashed",color = "red", size = .8)+ geom_abline(intercept = mlo, slope = 0, linetype = "dashed",color = "black", size = .8)
+dev.off()
+getwd()
+```
+
+```{r}
+#Assign cell names of "Male" or "Female" depending on Xist expression
+
+#identify cell names with Xist expression
+female<-WhichCells(object = LD1, expression = Xist >= 1) 
+
+#identify cell names without Xist expression
+male<-WhichCells(object = LD1, expression = Xist < 1) 
+
+#set up a vector with the correct number of "male" and "female" labels
+sex=as.factor(c(rep("Female",length(female)),rep("Male",length(male)))) 
+
+#assign each cell ID to its appropriate label; must match order set up in the vector above
+names(sex)<-c(female,male) 
+table(sex)
+
+#order this vector by the cellnames vector found in names(DG@meta.data)
+cellnames = rownames(LD1@meta.data)
+sex = sex[match(cellnames,names(sex))]
+
+#Add in a metadata column for the sex of the cell/animal
+LD1$sex <- sex
+
+#Check that the numbers match with the table above
+table(LD1$sex) 
+table(LD1$sex,LD1$sample_description)
+
+#extra for LD1's dataset: Create a new metadata column combining sample_description and sex: 
+fulldescription = paste0(LD1$sample_description, LD1$sex)
+names(fulldescription) = names(LD1@meta.data)
+table(fulldescription)
+LD1$fulldescription = fulldescription
+
+#subset including "ControlFemale","ControlMale","MST2cKO_FMCherryFemale"
+#LD1 <- subset(LD1, subset = fulldescription %in% c("ControlFemale","ControlMale","MST2cKO_FMCherryFemale"))
+
+#Rename fulldescription
+fulldescription = as.factor(LD1$fulldescription)
+levels(fulldescription)
+#levels(fulldescription) = c("Control Female","Control Male", "Deprived Female", "Deprived Male")
+#LD1$fulldescription = fulldescription
+VlnPlot(LD1,features = "Xist",group.by = "sex",split.by = "sample_description")
+```
+
+
+Normalize the data - counts per 10k (per million makes no sense) - set by the "scale.factor". Raw data has the original data; the data slot has the filtered data (from above); the normalization will work on the raw data but only pulls the cells that are included in your filtered "data" and store the normalization as data (NOT the scale data slot) - so it isn't working on the filtered data, it's working on the raw data. The only filter they take into account is for cells - you can't filter out genes before normalization. 
+
+
+
+Filtering out genes in Seurat - use AFTER normalization. Works on data object (i.e. normalized, filtered data). Currently set to eliminate genes expressed in fewer than 100 cells. 
+Option A: standard
+
+```{r}
+LD1 <- NormalizeData(LD1, normalization.method = "LogNormalize", scale.factor = 10000)
+LD1<-FindVariableFeatures(LD1, selection.method = "vst", nfeatures = 6000)
+top10 <- head(VariableFeatures(LD1),10)
+plot1 <- VariableFeaturePlot(LD1)
+plot2 <- LabelPoints(plot=plot1, points = top10, repel = T, xnudge = 0, ynudge = 0)
+plot1
+plot2
+```
+
+Scale the data
+```{r}
+all.genes<-rownames(LD1)
+var.genes = VariableFeatures(LD1)
+LD1<-ScaleData(LD1,features = var.genes, vars.to.regress = c("percent.mito","nCount_RNA"))
+```
+
+Option B: Sctransform *used*
+```{r}
+LD1 <- SCTransform(LD1, vars.to.regress = c("percent.mito","nCount_RNA"), verbose = FALSE,variable.features.n = 6000,conserve.memory = T,return.only.var.genes = T)
+```
+
+Dimensionality reduction. Note that UMAP can be run directly on most variable features as well. 
+```{r}
+var.genes = VariableFeatures(LD1)
+LD1 <- RunPCA(LD1,features = var.genes,npcs = 50, verbose = FALSE)
+
+
+#LD1<-RunTSNE(LD1,reduction = "pca",dims = 1:30, verbose = F)
+LD1<-RunUMAP(LD1,reduction = "pca",dims = 1:30, verbose = F,n.neighbors = 20L,min.dist = 0.5)
+LD1<-FindNeighbors(LD1,dims=1:30,verbose=F)
+LD1<-FindClusters(LD1,verbose=F,resolution = 1)
+```
+
+
+```{r}
+DimPlot(LD1,label=T,reduction = "umap")
+setwd("~/Desktop")
+setEPS()
+postscript("umap_LD1_2.eps")
+DimPlot(LD1,label=T,reduction = "umap",group.by = "celltypecluster")
+dev.off()
+
+FeaturePlot(LD1,c("Cx3cr1","Aldh1l1","Pdgfra","Tubb3","Mbp","Pecam1"),reduction = "tsne")
+
+setEPS()
+postscript("umap_nGene.eps")
+FeaturePlot(LD1,c("nFeature_RNA"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("umap_pctmito.eps")
+FeaturePlot(LD1,c("percent.mito"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("umap_nUMI.eps")
+FeaturePlot(LD1,c("nCount_RNA"),reduction = "umap")
+dev.off()
+
+
+setEPS()
+postscript("umap_Cx3cr1.eps")
+FeaturePlot(LD1,c("Cx3cr1"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("vln_clusters_Cx3cr1.eps")
+VlnPlot(LD1,c("Cx3cr1"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+setEPS()
+postscript("umap_Aldh1l1.eps")
+FeaturePlot(LD1,c("Aldh1l1"),reduction = "umap")
+dev.off()
+setEPS()
+postscript("vln_clusters_Aldh1l1.eps")
+VlnPlot(LD1,c("Aldh1l1"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+setEPS()
+postscript("umap_Pdgfra.eps")
+FeaturePlot(LD1,c("Pdgfra"),reduction = "umap")
+dev.off()
+setEPS()
+postscript("vln_clusters_Pdgfra.eps")
+VlnPlot(LD1,c("Pdgfra"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+setEPS()
+postscript("umap_Tuj1.eps")
+FeaturePlot(LD1,c("Tubb3"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("vln_clusters_Tuj1.eps")
+VlnPlot(LD1,c("Tubb3"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+setEPS()
+postscript("umap_Mbp.eps")
+FeaturePlot(LD1,c("Mbp"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("vln_clusters_Mbp.eps")
+VlnPlot(LD1,c("Mbp"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+setEPS()
+postscript("umap_Cd31.eps")
+FeaturePlot(LD1,c("Pecam1"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("vln_clusters_Cd31.eps")
+VlnPlot(LD1,c("Pecam1"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+setEPS()
+postscript("umap_ng2.eps")
+FeaturePlot(LD1,c("Cspg4"),reduction = "umap")
+dev.off()
+
+setEPS()
+postscript("vln_clusters_Ng2.eps")
+VlnPlot(LD1,c("Cspg4"),group.by = "seurat_clusters",sort = "increasing")
+dev.off()
+
+DimPlot(LD1,reduction = "tsne",group.by = "sample_description")
+setEPS()
+postscript("umap_ctrldep.eps")
+DimPlot(LD1,reduction = "umap",group.by = "sample_description",cols = c("blue","red3"))
+dev.off()
+```
+
+
+```{r}
+microglia = c(8,3,5,0)
+astrocytes = c(1,6)
+opcs = c(9,2)
+endothelial = 4
+pericytes = 11
+oligos = 7
+neurons = c(10,12)
+
+
+celltype = LD1$seurat_clusters
+levels(celltype) = c("microglia","astrocytes","opcs","microglia","endothelial","microglia","astrocytes","oligos","microglia","opcs","neurons","pericytes","neurons")
+LD1$celltype = celltype
+table(LD1$celltype,LD1$seurat_clusters)
+```
+
+
+```{r}
+
+#newclusters = LD1$SCT_snn_res.1.5
+#levels(newclusters)[15] = "4"
+#levels(newclusters)[15] = "14"
+#LD1$SCT_snn_res.1.5 = newclusters
+##For resolution = 1.5
+microglia = c(2,3,6,8,9,11)
+astrocytes = c(0,5)
+opcs = c(1,10)
+endothelial = c(4)
+pericytes = 13
+oligos = 7
+neurons = c(12,14)
+celltype = c(0:14)
+
+
+celltype[microglia+1] = "microglia"
+celltype[astrocytes+1] = "astrocytes"
+celltype[opcs+1] = "opcs"
+celltype[oligos+1] = "oligos"
+celltype[endothelial+1] = "endothelial"
+celltype[neurons+1] = "neurons"
+celltype[pericytes+1] = "pericytes"
+
+
+clusters = LD1$SCT_snn_res.1.5
+levels(clusters) = celltype
+
+LD1$celltype1.5 = clusters
+table(LD1$celltype1.5,LD1$SCT_snn_res.1.5)
+
+##Combine 14 and 4 (14 only has 19 cells in it)
+
+```
+Save the filtered, normalized data
+```{r}
+filename="LD1_sctransform1_v3.RData"
+save(LD1,file=filename)
+```
+*************** END HERE ********************
