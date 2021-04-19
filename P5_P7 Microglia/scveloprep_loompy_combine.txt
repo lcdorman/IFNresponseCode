@@ -1,0 +1,19 @@
+//go to python3 from terminal
+
+import numpy as np
+import loompy
+import scipy
+import os
+
+os.chdir("/Users/whippoorwill/Desktop/Sequencing/LD_AVM02/Data/loom files")
+files=['LD5LD.loom','LD5RC.loom','LD7LD.loom','LD7RC.loom']
+newfile='mgAVM02.loom'
+loompy.combine(files,newfile,key="Accession")
+
+//check the files
+
+ds=loompy.connect("LD5LD.loom")
+ds.row_attrs
+ds.col_attrs
+
+

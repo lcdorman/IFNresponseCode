@@ -1,0 +1,582 @@
+---
+title: "Adding annotations to scRNAseq analyses"
+output:
+  html_document:
+    df_print: paged
+---
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(EnhancedVolcano)
+
+#BiocManager::install("EnhancedVolcano")
+```
+
+Load in files
+
+```{r}
+name = "LDAVMO2_Trial"
+dir = "~/Desktop/Sequencing/LD_AVM02"
+genefilename = "allmarkers_vargenesMG_0501.csv"
+peaksfilename = "MergedpeaksPBSAnnotated_v2.csv"
+specfilename = "barreslab_rnaseq.csv" #courtesy of https://brainrnaseq.org
+velocityfilename = "spliced_unspliced_ratio.csv"
+velocitygenefile = "splicegenes.csv"
+cellphonedbfile = "significant_means.csv"
+impclusters = c(3,4,5,8)
+alpha = 1e-25
+foldchange = 1.15
+```
+
+```{r}
+de = read.csv(file.path("/Users/whippoorwill/Dropbox (Anna Molofsky Lab)/2020-Leah-barrelCortex/Manuscript data/Glia RNASeq/P5_P7 MG rnaseq/Spreadsheets/",genefilename),stringsAsFactors = F)
+
+peaks = read.csv(file.path(dir,"Spreadsheets",peaksfilename),stringsAsFactors = F)
+
+#barres = read.csv(file.path(dir,"Spreadsheets",specfilename),stringsAsFactors = F)
+barres = read.csv("/Users/whippoorwill/Desktop/Sequencing/LD_AVM02/Spreadsheets/barreslab_rnaseq.csv",stringsAsFactors = F)
+
+ratio = read.csv(file.path(dir,"Spreadsheets",velocityfilename),header = F)
+
+velocitygenes = read.csv(file.path(dir,"Spreadsheets",velocitygenefile),stringsAsFactors = F)
+
+cellphonedb = read.csv(file.path(dir,"Spreadsheets",cellphonedbfile),stringsAsFactors = F)
+```
+
+Determine "cells of interest" for calculating cell type specificity in barres dataset. only change "coi"
+```{r}
+colnames(barres)
+coi = 8
+other = c(3:(coi-1),(coi+1):9)
+```
+
+```{r}
+#remove excess columns
+genes = de[,3:ncol(de)]
+head(genes)
+
+#remove genes that don't pass a threshold for p-value and log fold change
+alpha = 1e-25
+lfoldchange = 0.2
+
+genes = genes[genes$p_val_adj<alpha,]
+genes = genes[genes$avg_logFC > lfoldchange | genes$avg_logFC < -lfoldchange,]
+```
+
+Load file with atac-seq peaks and edit to merge each gene into one line
+
+```{r}
+head(peaks)
+peaks = peaks[,c("Peak.Score","Focus.Ratio.Region.Size","Detailed.Annotation","Gene.Name")]
+head(peaks)
+```
+
+Change "Detailed.Annotation" to specific meaningful values
+```{r}
+annotation = peaks$Detailed.Annotation
+rpt = grep("repeat",annotation)
+names(rpt) = rep("Repeat",length(rpt))
+
+#pull out different kinds of annotations
+prom = grep("promoter",annotation)
+names(prom) = rep("Promoter",length(prom))
+
+intergenic = grep("Intergenic",annotation)
+names(intergenic) = rep("Intergenic",length(intergenic))
+
+cpg = grep("CpG",annotation)
+names(cpg) = rep("CpG",length(cpg))
+
+utr3 = grep("3' UTR",annotation)
+names(utr3) = rep("UTR3",length(utr3))
+
+utr5 = grep("5' UTR",annotation)
+names(utr5) = rep("UTR5",length(utr5))
+
+exon = grep("exon",annotation)
+names(exon) = rep("Exon",length(exon))
+exon = exon[!exon %in% c(utr3,utr5)]
+
+intron = grep("intron",annotation)
+names(intron) = rep("Intron",length(intron))
+
+tts = grep("TTS",annotation)
+names(tts) = rep("TTS",length(tts))
+
+annotationfull = c(rpt,exon,prom,intergenic,cpg,utr3,utr5,intron,tts)
+annotationfull = annotationfull[order(annotationfull)]
+
+annotation[annotationfull] = names(annotationfull)
+```
+
+Annotate peaks
+```{r}
+peaks$Detailed.Annotation = annotation
+
+#Separate only the genes that are present in my file
+allgenes = genes$gene
+peaks = peaks[peaks$Gene.Name %in% allgenes,]
+
+#Include only confident peaks (> 1 sample)
+peaks = peaks[grep("\\|",peaks$Focus.Ratio.Region.Size),]
+head(peaks)
+```
+
+Select only the genes with promoter peaks (skip or change "Promoter" based on what you are interested in looking at)
+```{r}
+peaks = peaks[peaks$Detailed.Annotation == "Promoter",]
+peaks = peaks[order(peaks$Peak.Score,decreasing = T),]
+head(peaks)
+```
+
+Merge every annotation for the same gene into one line. 
+```{r}
+k = ncol(peaks)
+for (i in 2:length(peaks$Gene.Name)){
+  if (peaks$Gene.Name[(i-1)] == peaks$Gene.Name[i]){ 
+    peaks[(i-(k/4)),(k+1):(k+4)] = peaks[i,1:4]
+    k = k+4
+  } else {k = 4}
+}
+
+peaks = peaks[!duplicated(peaks$Gene.Name),]
+head(peaks)
+```
+
+Select only the annotations for genes in your file, and save for future reference
+```{r}
+peaks = peaks[match(genes$gene,peaks$Gene.Name),]
+atac =cbind(genes,peaks)
+write.csv(atac,file = file.path(dir,"Spreadsheets",paste0(name,"atacseq_degenes_promoters.csv")))
+```
+
+Make a new spreadsheet with only the genes upregulated in a specific cluster
+```{r}
+clusters = levels(as.factor(genes$cluster))
+for (cluster in clusters){
+  genes_cluster = genes[genes$cluster == cluster,]
+  peaks_cluster = peaks[peaks$Gene.Name %in% genes_cluster$gene,]
+  dim(peaks_cluster)
+  head(peaks_cluster)
+  write.csv(peaks_cluster,file.path(dir,"Spreadsheets",paste0(name,"_Peaks_cluster",cluster,".csv")))
+}
+```
+
+Calculate a cell type specificity rating for your cell type of interest (in this case, microglia)
+
+This function will calculate a Cell Type enrichment by dividing the fpkm for your cell type by the average fpkm for all microglial genes.
+```{r}
+c = ncol(barres)+1
+#mg = median(barres$Microglia)
+
+for (i in 1:nrow(barres)){
+  row = barres[i,]
+  mspec = as.numeric(row[coi])/mean(as.numeric(row[other]),na.rm = T)
+  barres[i,c] = mspec
+}
+colnames(barres)[c] = paste0(colnames(barres)[coi],"Specificity")
+```
+
+Alternative: just use the normalized FPKM
+
+
+Add the barres annotation to the atac-seq gene datasheet
+```{r}
+barres = barres[match(atac$gene,barres$Gene.symbol),]
+dim(atac)
+dim(barres)
+atac = cbind(barres,atac)
+atac$Gene.symbol = atac$gene
+head(atac)
+```
+Save the annotated file
+
+```{r}
+write.csv(atac,file = file.path(dir,"Spreadsheets",paste0(name,"_atacseqwithbarres_promoters_",colnames(barres)[coi],"_specificity.csv")))
+```
+
+
+Relationship between peak size and microglial specificity by cluster
+A. with specificity
+```{r}
+a = as.data.frame(cbind("Gene" = atac$Gene.symbol,"Cluster" = atac$cluster,"Specificity" = atac[,paste0(colnames(barres)[coi],"Specificity")],"Fpkm" = atac$Microglia,
+                        "Peak" = atac$Peak.Score,
+                        "avg_logfc" = atac$avg_logFC,
+                        "pctexpr" = atac$pct.1))
+```
+
+
+B. with microglial FPKM
+```{r}
+#a = as.data.frame(cbind("Gene" = atac$Gene.symbol,
+                        #"Cluster" = atac$cluster,
+                        #"Specificity" = atac$Microglia,
+                        #"Peak" = atac$Peak.Score,
+                        #"avg_logfc" = atac$avg_logFC,
+                        #"pctexpr" = atac$pct.1))
+```
+
+
+```{r}
+a$Peak = as.character(a$Peak)
+a$Peak = as.numeric(a$Peak)
+a$Peak[is.na(a$Peak)] = 0
+
+a$Specificity = as.character(a$Specificity)
+a$Specificity = as.numeric(a$Specificity)
+
+a$Fpkm = as.character(a$Fpkm)
+a$Fpkm = as.numeric(a$Fpkm)
+
+a$pctexpr = as.character(a$pctexpr)
+a$pctexpr = as.numeric(a$pctexpr)
+
+a$avg_logfc = as.character(a$avg_logfc)
+a$avg_logfc = as.numeric(a$avg_logfc)
+
+a$Cluster = as.character(a$Cluster)
+head(a)
+```
+
+adding in spliced:unspliced ratio calculated in scvelo (see scvelo_mgavm02 script for details)
+
+```{r}
+allratios = {}
+for (cluster in impclusters){
+  filename = paste0("~/Desktop/Sequencing/LD_AVM02/Spreadsheets/splicedratio_",cluster,".txt")
+  ratio = read.table(filename, stringsAsFactors = F, header = F,sep = ",")
+  ratio = as.numeric(ratio[1,])
+  names(ratio) = velocitygenes$Name
+  allratios[[cluster]] = ratio
+}
+```
+
+add ratios to the spreadsheet a
+```{r}
+newa = NULL
+for (cluster in impclusters){
+  ratio = allratios[[cluster]]
+  asub = a[a$Cluster == cluster,]
+  ratio = ratio[match(asub$Gene,names(ratio))]
+  asub$splicedratio = ratio
+  asub$splicedratio = as.numeric(as.character(asub$splicedratio))
+  newa = rbind(newa,asub)
+}
+a = newa
+```
+
+
+```{r}
+#ac = a
+a = a[a$Cluster %in% impclusters,]
+a = a[!is.na(a$Peak),]
+
+a = a[a$pctexpr > 0.2,]
+a=a[a$splicedratio != "Inf",]
+a = a[!is.na(a$splicedratio),] 
+```
+
+Peak chromatin score vs specificity
+
+
+```{r}
+lm_eqn <- function(df){
+    m <- lm(y ~ x, df);
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             r2 = format(summary(m)$r.squared, digits = 3)))
+    as.character(as.expression(eq));
+}
+
+df = NULL
+df$y = log(a$splicedratio)
+df$x = log(a$Specificity)
+ac = a[a$avg_logfc>-0.5,]
+b <- ggplot(ac, aes(x = log(Specificity), y = log(splicedratio))) + ylim(-4,8) + xlim(-3,10)
+c = b + geom_point(aes(color = Cluster)) +
+    scale_color_manual(values = c('green','blue','darkgrey','purple')) + geom_text( 
+      data=ac %>% filter(log(Specificity)>8 | log(splicedratio) < -1),
+      aes(label=Gene),nudge_x = -0.8,check_overlap = T) + geom_smooth(method = "lm")
+graph = c+ geom_text(x = 5, y = 8, label = lm_eqn(df), parse = TRUE)
+setEPS()
+postscript(paste0("~/Desktop/","enrichmentvs",colnames(barres)[coi],"spliced.eps"))
+print(graph)
+dev.off()
+
+
+```
+
+
+```{r}
+b <- ggplot(a, aes(x = log(splicedratio), y = Peak))
+
+c = b + geom_point(aes(color = Cluster)) +
+  scale_color_manual(values = c('green','blue','darkgrey','purple')) + geom_text( 
+    data=a %>% filter(log(splicedratio)>6 | log(splicedratio)<(-3) | Peak>120),
+    aes(label=Gene),nudge_x = -0.8,check_overlap = T)   
+c
+
+setEPS()
+postscript(file.path("~/Desktop","Plots",paste0(name,"atacseqpeak_vs_splicedratio.eps")))
+c
+dev.off()
+```
+
+Peak chromatin score vs specificity
+```{r}
+b <- ggplot(a, aes(y = Peak, x = log(Specificity)))
+
+c = b + geom_point(aes(color = Cluster)) +
+  scale_color_manual(values = c('green','blue','darkgrey','purple')) + geom_text( 
+    data=a %>% filter(log(Specificity)>5 | log(Specificity)<(-3) | Peak>100),aes(label=Gene),nudge_x = -0.5,check_overlap = T)
+print(c)
+
+setEPS()
+postscript(file.path(dir,"Plots",paste0(name,colnames(barres)[coi],"specificity_peak.eps")))
+c
+dev.off()
+```
+
+Specificity vs spliced:unspliced ratio
+
+```{r}
+b <- ggplot(a, aes(x = log(splicedratio), y = log(Specificity)))
+c = b + geom_point(aes(color = Cluster)) +
+  scale_color_manual(values = c('green','blue','darkgrey','purple')) + geom_text( 
+    data=a %>% filter(log(splicedratio)>6 | log(splicedratio)<(-3) | log(Specificity)>5),
+    aes(label=Gene),nudge_x = -0.8,check_overlap = T)   
+print(c)
+setEPS()
+postscript(file.path(dir,"Plots",paste0(name,colnames(barres)[coi],"specificity_splicedratio.eps")))
+c
+dev.off()
+```
+
+
+
+Volcano Plot: 
+
+```{r}
+newlist = list()
+clusters = c("3","4")
+#Split by cluster
+for (cluster in clusters){
+  newlist[[cluster]] = de[de$cluster == cluster,]
+}
+
+#select a single cluster
+for (cluster in clusters){
+  fc = newlist[[cluster]]
+  fc = fc[!is.na(fc$avg_logFC),]
+  colorkeysdown = fc$gene[fc$avg_logFC < -log2(foldchange) & fc$p_val_adj < alpha]
+  colorkeysup = fc$gene[fc$avg_logFC > log2(foldchange) & fc$p_val_adj < alpha]
+  xlim = max(abs(fc$avg_logFC))
+  atac = atac[atac$Peak.Score>15,]
+  allcolors = rep("darkgrey",length(fc$gene))
+  names(allcolors) = fc$gene
+  allcolors[names(allcolors) %in% colorkeysdown] = "blue"
+  allcolors[names(allcolors) %in% colorkeysup]= "yellow"
+  allcolors[names(allcolors)%in% atac$gene] = "red"
+  names(allcolors)[allcolors == "yellow"] = "u"
+  names(allcolors)[allcolors == "darkgrey"] = "-"
+  names(allcolors)[allcolors == "blue"] = "d"
+  names(allcolors)[allcolors == "red"] = "a"
+
+  setEPS()
+  postscript(file.path("~/Desktop","Plots",paste0(name,"_volcano_atac>15",cluster,"label.eps")))
+  print(EnhancedVolcano(fc,
+                lab = fc$gene,
+                x = 'avg_logFC',
+                y = 'p_val_adj',
+                xlim = c(-xlim,xlim),
+                title = paste0("atac",cluster),
+                subtitle = "",
+                drawConnectors = F,
+                legendPosition = 'right',
+                pCutoff = alpha,
+                FCcutoff = log2(foldchange),
+                selectLab = c(colorkeysdown,colorkeysup),
+                col=c('black', 'black', 'black', 'red3'),
+                colCustom = allcolors,
+                gridlines.major = F,
+                gridlines.minor = F,
+                colAlpha = 1))
+  dev.off()
+  
+  print(EnhancedVolcano(fc,
+                lab = fc$gene,
+                x = 'avg_logFC',
+                y = 'p_val_adj',
+                xlim = c(-xlim,xlim),
+                title = paste0("atac",cluster),
+                subtitle = "",
+                drawConnectors = F,
+                legendPosition = 'right',
+                pCutoff = alpha,
+                FCcutoff = log2(foldchange),
+                selectLab = c(colorkeysdown,colorkeysup),
+                col=c('black', 'black', 'black', 'red3'),
+                colCustom = allcolors,
+                gridlines.major = F,
+                gridlines.minor = F,
+                colAlpha = 1))
+  
+}
+```
+Make a table
+
+Select only the diff. exp genes from atac-seq data
+```{r}
+atac$cluster = as.factor(atac$cluster)
+de$cluster = as.factor(de$cluster)
+#a = a[a$avg_logfc > alpha,]
+atac = atac[atac$avg_logFC > log2(foldchange),]
+
+atacup = atac[!is.na(atac$Peak.Score),]
+atacup = atacup[atacup$Peak.Score > 15,]
+
+#fpkmlim = 0.7
+speclim = 10
+#quantile(a$splicedratio,na.rm = T, 0.25)
+#splicelim = 0.66
+
+specup = atac[atac$MicrogliaSpecificity > speclim,]
+#fpkmup = a[a$Fpkm > fpkmlim,]
+#splicedup = a[a$splicedratio> splicelim,]
+#specup = atac %>%
+    #group_by(cluster) %>%
+    #dplyr::summarize(median(MicrogliaSpecificity, na.rm=TRUE))
+
+#specup = a %>%
+    #group_by(Cluster) %>%
+    #dplyr::summarize(mean(splicedratio, na.rm=TRUE))
+
+#fpkm = atac %>% group_by(cluster) %>% summarize(median(Microglia,na.rm = T))
+```
+
+
+```{r}
+atacup = table(atacup$cluster)
+specup = table(specup$cluster)
+#fpkmup = table(fpkmup$Cluster)
+#splicedup = table(splicedup$Cluster)
+deup = de[de$avg_logFC>log2(foldchange) & de$p_val_adj <alpha,]
+#dedown = de[de$avg_logFC< -log2(foldchange) & de$p_val_adj <alpha,]
+
+allup= table(atac$cluster)
+
+allup
+atacup
+specup
+#fpkmup
+#splicedup
+
+```
+compare to atac-seq data
+```{r}
+
+#alldown = table(dedown$cluster)
+
+t = rbind(allup,atacup,pctatac = round(atacup/allup*100,0),specup, pctspec= round(specup/allup*100,0))
+
+#t = rbind(allup,atacup,pctatac = round(atacup/allup*100,0),"spec" = specup$`median(MicrogliaSpecificity, na.rm = TRUE)`,"fpkm" = fpkm$`median(Microglia, na.rm = T)`)
+```
+
+Bar chart
+
+```{r}
+#pull out exactly what you want to plot
+p = t[c("pctspec","pctatac"),]
+c = barplot(p, horiz = F, las=1, xlim = c(0,30),xlab = "cluster", ylab = '% promoter atac-seq peaks',
+        beside=T, col=c('darkgrey','blue'),ylim = c(0,100),legend = c( "microgliaenrichment>50","atac>15"),axis.lty = 1)
+c
+
+
+#actually make a bargraph of t$rup and t$rdown
+setEPS()
+postscript("~/Desktop/Plots/atac_enrichment.eps")
+c = barplot(p, horiz = F, las=1, xlim = c(0,30),xlab = "cluster", ylab = '% promoter atac-seq peaks',
+        beside=T, col=c('darkgrey','blue'),ylim = c(0,100),legend = c( "microgliaSpecificity>50","atac>15"),axis.lty = 1)
+dev.off()
+
+#add in percent of upregulated genes with microglial specificity >0.5: 
+specvsplice = a[a$Cluster %in% c("3","4"),]
+
+write.csv(specvsplice,file = "~/Desktop/specvsplice.csv")
+```
+```{r}
+a$Cluster = as.factor(a$Cluster)
+a = a[a$avg_logfc > log2(foldchange),]
+a = a[a$Cluster %in% c("3","4","5","8"),]
+a$Cluster = droplevels(a$Cluster)
+for (cluster in levels(a$Cluster)){
+  b = a[a$Cluster == cluster,]
+  print(c(cluster,quantile(b$Specificity,na.rm = T,probs = c(0.05,0.25,0.5,0.75,0.95))))
+}
+
+#plot(x = log(a$Specificity),y = a$Peak)
+```
+
+
+Cellphone db: also from jupyter, see python script for details. "X3.04" means from cluster 3 (source) to cluster 4 (target)
+count per interaction, remove rows with nothing
+```{r}
+colnames(cellphonedb)
+```
+
+```{r}
+cdb = cellphonedb[,13:28]
+cdb = cdb[rowSums(cdb,na.rm = T)>0,]
+```
+
+Replace NA with 0 and any number with 1 (count incidents)
+```{r}
+cdb[!is.na(cdb)] = 1
+cdb[is.na(cdb)] = 0
+cd = colSums(cdb,na.rm = T)
+cd
+```
+**Make a table(* 
+
+First we will repeat the names for source and target and then rename source and target to the appropriate portions of the name itself. 
+
+```{r}
+cd = rbind("Source" = names(cd),"Target" = names(cd),"interactions" = cd)
+cd["Source",] = sapply(cd["Source",],function(x)paste0("Source_",strsplit(x,"")[[1]][2]))
+cd["Target",] = sapply(cd["Target",],function(x)strsplit(x,"\\.")[[1]][2]) #split on ".", take 2nd
+cd["Target",] =sapply(cd["Target",],function(x)paste0("Target_",strsplit(x,"")[[1]][2])) #remove "0"
+```
+
+Make a 3D table first, then iterate through each matrix and add the 3rd dimension (#interactions) to its appropriate position
+
+```{r}
+x = table(cd["Source",],cd["Target",],cd["interactions",])
+dimnames(x)
+dim(x)[3]
+a = x[,,1]
+for (i in 1:dim(x)[3]){
+  t = x[,,i]
+  a[t == 1] = dimnames(x)[[3]][i]
+}
+```
+
+
+```{r}
+b = as.matrix.data.frame(a,rownames.force = T)
+colnames(b) = colnames(a)
+b = apply(b,MARGIN = c(1,2), function(x)as.numeric(x))
+
+pheatmap(b, display_numbers = T,scale = "none",cluster_cols = F,cluster_rows = F )
+setEPS()
+postscript(file.path(dir,"Plots",paste0(name,"heatmap_cellphonedb.eps")))
+pheatmap(b, display_numbers = T,scale = "none",cluster_cols = F,cluster_rows = F,color = c("lightgrey","lightyellow","gold","orange","darkorange","red","darkred" ))
+dev.off()
+```
+
+
+
+
+
