@@ -1,0 +1,16 @@
+
+cellranger count --id=LD5RC --transcriptome=refdata-cellranger-mm10-3.0.0 --fastqs=~/MGseq201957/LD_AVM02_FastQ/LD5RC --sample=LD5RC --chemistry=SC3Pv3 --nosecondary && echo "B1_yes_cellranger3.1.0" >> didIwork.txt
+cp -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD5RC ~/../../media/sf_SharedFolder
+rm -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD5RC
+
+cellranger count --id=LD5LD --transcriptome=refdata-cellranger-mm10-3.0.0 --fastqs=~/MGseq201957/LD_AVM02_FastQ/LD5LD --sample=LD5LD --chemistry=SC3Pv3 --nosecondary && echo "B2_yes_cellranger3.1.0" >> didIwork.txt
+cp -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD5LD ~/../../media/sf_SharedFolder
+rm -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD5LD
+
+cellranger count --id=LD7RC --transcriptome=refdata-cellranger-mm10-3.0.0 --fastqs=~/MGseq201957/LD_AVM02_FastQ/LD7RC --sample=LD7RC --chemistry=SC3Pv3 --nosecondary && echo "B3_yes_cellranger3.1.0" >> didIwork.txt
+cp -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD7RC ~/../../media/sf_SharedFolder
+rm -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD7RC
+
+cellranger count --id=LD7LD --transcriptome=refdata-cellranger-mm10-3.0.0 --fastqs=~/MGseq201957/LD_AVM02_FastQ/LD7LD --sample=LD7LD --chemistry=SC3Pv3 --nosecondary && echo "B4_yes_cellranger3.1.0" >> didIwork.txt
+cp -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD7LD ~/../../media/sf_SharedFolder
+rm -rf ~/../ubuntusc/MGseq201957/LD_AVM02_data_outs/LD7LD

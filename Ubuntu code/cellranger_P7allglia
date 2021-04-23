@@ -1,0 +1,6 @@
+cd ~/PilotJuly2018/gi_LD-2563_data_outs
+cellranger count --id=sort_ipsi --transcriptome=~/CellRanger/refdata-cellranger-mm10-1.2.0 --fastqs=~/PilotJuly2018/gi_LD-2563_data_outs/gi_LD-2563/C1 --sample=LD-2563_1-c1 --chemistry=SC3Pv2 --nosecondary && echo "C1_yes" >> didIwork.txt
+cellranger count --id=sort_contra --transcriptome=~/CellRanger/refdata-cellranger-mm10-1.2.0 --fastqs=~/PilotJuly2018/gi_LD-2563_data_outs/gi_LD-2563/C2 --sample=LD-2563_2-c2 --chemistry=SC3Pv2 --nosecondary && echo "C2_yes" >> didIwork.txt
+cellranger count --id=unsort_ipsi --transcriptome=~/CellRanger/refdata-cellranger-mm10-1.2.0 --fastqs=~/PilotJuly2018/gi_LD-2563_data_outs/gi_LD-2563/C3 --sample=LD-2563_3-c3 --chemistry=SC3Pv2 --nosecondary && echo "C3_yes" >> didIwork.txt
+cellranger count --id=unsort_contra --transcriptome=~/CellRanger/refdata-cellranger-mm10-1.2.0 --fastqs=~/PilotJuly2018/gi_LD-2563_data_outs/gi_LD-2563/C4 --sample=LD-2563_4-c4 --chemistry=SC3Pv2 --nosecondary && echo "C4_yes" >> didIwork.txt
+

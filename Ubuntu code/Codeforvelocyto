@@ -1,0 +1,17 @@
+
+
+
+velocyto run10x LD5LD ~/CellRanger/refdata-cellranger-mm10-3.0.0/genes/genes.gtf
+rm -rf LD5LD/outs
+
+cp -rf ~/../../media/sf_SharedFolder/LD7LD ~/../ubuntusc/mgAVM02
+velocyto run10x LD7LD ~/CellRanger/refdata-cellranger-mm10-3.0.0/genes/genes.gtf
+rm -rf LD7LD/outs
+
+cp -rf ~/../../media/sf_SharedFolder/LD7RC ~/../ubuntusc/mgAVM02
+velocyto run10x LD7RC ~/CellRanger/refdata-cellranger-mm10-3.0.0/genes/genes.gtf
+rm -rf LD7RC/outs
+
+cp -rf ~/../../media/sf_SharedFolder/LD5RC ~/../ubuntusc/mgAVM02
+velocyto run10x LD5RC ~/CellRanger/refdata-cellranger-mm10-3.0.0/genes/genes.gtf
+rm -rf LD5RC/outs
