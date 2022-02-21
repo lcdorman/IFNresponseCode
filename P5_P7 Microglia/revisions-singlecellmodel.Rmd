@@ -1,0 +1,840 @@
+---
+title: "revisions-singlecellmodels"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+Only run once - creating a reference
+Go to https://carmonalab.github.io/ProjecTILs/tutorial.html for instructions on embedding new data into this umap
+```{r}
+library(Seurat)
+library(umap)
+library(ggplot2)
+library(ProjecTILs)
+```
+
+```{r}
+#Set up parameters
+robject = "/Users/whippoorwill/Desktop/Sequencing/LD_AVM02/Data/Seurat/mgAVM02_customUMAP_newPCA.rds"
+genes = c("P2ry12","Apoe","Ifitm3","Grin1b","Mki67") #genes of interest for your clusters
+clustering = "finalclusters" #clustering column within ref object
+newrefname = "/Users/whippoorwill/Desktop/Sequencing/LD_AVM02/Data/Seurat/mgAVM02_customUMAP_newPCA.rds"
+seed=42
+n.neighbors=30
+min.dist=0.3
+metric="cosine"
+ndim=30
+which.assay="RNA" #SCT or RNA
+```
+
+Part 1: Create Reference Object
+```{r}
+#load the object
+ref = readRDS(robject)
+
+#subset the object to max 5,000 cells
+cellnames = sample(colnames(robject),4000)
+ref= subset(robject,cells = cellnames)
+
+#check if the subsetting worked and preserves your clusters of interest
+DimPlot(ref)
+
+#Create new PC coordinates
+varfeat <- ref@assays[[which.assay]]@var.features
+refdata <- data.frame(t(as.matrix(ref@assays[[which.assay]]@data[varfeat,])))
+refdata <- refdata[, sort(colnames(refdata))]
+refdata = refdata[,colSums(refdata) >10]
+min(colSums(refdata)) #greater than 0
+ref.pca <- prcomp(refdata, rank. = 50, scale. = TRUE, center = TRUE, retx=TRUE)
+ref.pca$rotation[1:5,1:5]
+
+#Create new UMAP coordinates
+umap.config <- umap.defaults
+umap.config$n_neighbors = n.neighbors
+umap.config$min_dist = min.dist
+umap.config$metric = metric
+umap.config$n_components = 2
+umap.config$random_state = 4
+umap.config$transform_state = 100
+ref.umap <- umap(ref.pca$x[,1:ndim], config=umap.config)
+colnames(ref.umap$layout) <- c("UMAP_2","UMAP_1")
+ref.umap
+
+ref@reductions$umap@cell.embeddings <- ref.umap$layout
+
+#Store the complete PCA and UMAP object in @misc
+ref@misc$pca_object <- ref.pca
+ref@misc$umap_object <- ref.umap
+ref@misc$projecTILs="custom_atlas"
+
+#take a look at the reference clustering
+DimPlot(ref, reduction = "umap", pt.size = 0.5, group.by = clustering) + ggtitle("UMAP by cluster")
+VlnPlot(ref,genes,split.by = clustering)
+
+#save the object
+saveRDS(ref,file = newrefname)
+
+
+#remove all the objects you've created
+rm(ref.umap)
+rm(robject)
+rm(ref.pca)
+```
+
+
+**Start here if you have already created a reference***
+
+#Load reference 
+```{r}
+ref <- load.reference.map(ref=newrefname)
+ref@assays$integrated = ref@assays[[which.assay]]
+```
+
+Code for loading in new dataset to compare against the reference
+```{r}
+#directory with new data
+directory = "~/Desktop/revisions/sequencing/single cell models"
+folders = list.files(directory)
+
+#inside each folder should be a folder named "10x","seurat"," or "raw"
+n = 1
+skip = F
+#note: if already projected, skip the next part
+if ("projected" %in% list.files(file.path(directory,folders[n]))){
+  if (length(list.files(file.path(directory,folders[n],"projected"))) == 0) {
+    projected = F
+  } else {
+    projected = T
+    load(list.files(file.path(directory,folders[n],"projected")))
+    skip = T
+  }
+  
+}
+#projected
+folders[n]
+skip
+```
+
+
+```{r}
+if (!skip){
+  meta = F
+  kind = list.files(file.path(directory,folders[n]))
+  if (length(kind)>1){
+    if ("metadata" %in% kind) {
+      meta = T
+      m = list.files(file.path(directory,folders[n],"metadata"))
+      metadata = read.csv(file.path(directory,folders[n],"metadata",m))}
+    if ("raw" %in% kind) {kind = "raw"}
+    else if ("10x" %in% kind) {kind = "10x"}
+    else if ("seurat" %in% kind) {kind = "seurat"}
+  }
+  p = file.path(directory,folders[n],kind)
+  filelist = list.files(p)
+  if (meta) {print(metadata)}
+  print(kind)
+  print(p)
+}
+```
+```{r}
+if (kind == "seurat"){
+  load(file.path(p,filelist))
+}
+
+
+```
+
+```{r}
+if(!skip){
+  if (length(filelist)==1){
+    querydata <- read.sc.query(file.path(p,filelist), type = kind)
+  } else {
+    filelist
+    l = list()
+    for (folder in filelist){
+      path = file.path(p,folder)
+      querydata = read.sc.query(path,type = kind)
+      querydata@meta.data$orig.ident = folder
+      l[[folder]] = querydata
+    }
+    sobject = l[[1]]
+    for (i in 2:length(l)){
+      sobject = merge(sobject,l[[i]])
+    }
+    querydata = sobject
+    rm(sobject)
+  }
+}
+```
+For h5 file
+```{r}
+#filelist=filelist[c(1:2,4:5)]
+l = list()
+for (file in filelist){
+  path = file.path(p,file)
+  querydata = Read10X_h5(path,use.names = T, unique.features = T)
+  querydata = CreateSeuratObject(querydata)
+  querydata@meta.data$orig.ident = file
+  l[[file]] = querydata
+  }
+sobject = l[[1]]
+  for (i in 2:length(l)){
+    sobject = merge(sobject,l[[i]])
+    }
+querydata = sobject
+rm(sobject)
+```
+
+#note: currently doesn't work on files, use below: 
+
+```{r}
+library(tidyverse)
+l = list()
+```
+
+below: if you need to alter each file individually
+```{r}
+for (file in filelist[1:length(filelist)]){
+      path = file.path(p,file)
+      h = read.csv(path)
+      h = h[!duplicated(h$GeneID),]
+      rownames(h) = h$GeneID
+      h = h[,c(ncol(h),1:(ncol(h)-1))]
+      write_csv(h,file = path)
+      querydata = read.sc.query(path,type = kind)
+      querydata@meta.data$orig.ident = strsplit(file,"_")[[1]][1]
+      l[[file]] = querydata
+}
+```
+```{r}
+for (file in filelist[1:length(filelist)]){
+      path = file.path(p,file)
+      querydata = read.sc.query(path,type = kind)
+      querydata@meta.data$orig.ident = strsplit(file,".")[[1]][1]
+      l[[file]] = querydata
+}
+```
+Make sure there is annotation in the objects
+```{r}
+for (i in 1:length(l)){
+  l[[i]]$orig.ident = paste0(strsplit(names(l)[i],"_")[[1]][2],"_",strsplit(names(l)[i],"_")[[1]][3],"_",strsplit(names(l)[i],"_")[[1]][4])
+}
+```
+
+Merge datasets
+```{r}
+sobject = l[[1]]
+querydata = merge(sobject,y = l[2:length(l)])
+```
+```{r}
+table(querydata$orig.ident)
+querydata$age = sapply(querydata$orig.ident,function(x){strsplit(x,"_")[[1]][1]})
+querydata$sex = sapply(querydata$orig.ident,function(x){strsplit(x,"_")[[1]][2]})
+table(querydata$sex)
+querydata$sex[querydata$sex %in% c("F","female")] = "Female"
+querydata$sex[querydata$sex %in% c("M","male","Male")] = "Male"
+querydata$condition = sapply(querydata$orig.ident,function(x){strsplit(x,"_")[[1]][3]})
+table(querydata$condition)
+x = as.factor(querydata$condition)
+levels(x)
+levels(x) = c(rep("Dep",4),rep("Ctrl",4))
+querydata$condition = x
+querydata$sampledescription = paste0(querydata$age,querydata$condition)
+```
+
+```{r}
+meta = as.factor(querydata$orig.ident)
+levels(meta)
+
+```
+
+Collapse replicates in at least one metadata column: (specific)
+```{r}
+x = as.factor(querydata$orig.ident)
+levels(x)
+levels(x)= c("14days","14days","5days","5days")
+querydata$sampledescription = x
+```
+
+Filter the datasets (look at graphs to determine the correct criteria)
+Note: SOD1G93A stats looked really poor, not great data
+```{r}
+#Filter:
+
+querydata = PercentageFeatureSet(querydata,pattern = "^mt-",col.name = "pct.mito")
+VlnPlot(querydata,c("nFeature_RNA","pct.mito"),group.by = "orig.ident") + geom_abline(intercept = 5, slope = 0)
+
+
+nFlow = 2000
+nFhi = 4000
+pm = 5
+
+VlnPlot(querydata,c("nFeature_RNA"),group.by = "orig.ident",pt.size = 0) + geom_abline(intercept = 5, slope = 0) + geom_abline(intercept = nFlow, slope = 0, linetype = "dashed",color = "red", size = .8) + geom_abline(intercept = nFhi, slope = 0, linetype = "dashed",color = "red", size = .8)
+```
+
+Complete filtering: 
+```{r}
+querydata = subset(querydata,subset = pct.mito<pm)
+querydata = subset(querydata,subset = nFeature_RNA<nFhi)
+querydata = subset(querydata,subset = nFeature_RNA>nFlow)
+```
+quickly cluster to subset microglia [note: in gunnar data, no expression of ifnb1]
+```{r}
+sobject <- NormalizeData(querydata,normalization.method = "LogNormalize", scale.factor = 10000)
+sobject<-FindVariableFeatures(sobject, selection.method = "vst", nfeatures = 3000)
+sobject<-ScaleData(sobject,features = VariableFeatures(sobject), vars.to.regress = c("nFeature_RNA"))
+sobject <- RunPCA(sobject,features = VariableFeatures(sobject),npcs = 20, verbose = FALSE)
+sobject<-RunUMAP(sobject,reduction = "pca",dims = 1:10, verbose = F)
+sobject<-FindNeighbors(sobject,dims=1:10,verbose=F)
+sobject<-FindClusters(sobject,verbose=F,resolution = 0.5)
+DimPlot(sobject,group.by = "seurat_clusters",label = T)
+DimPlot(sobject,group.by = "condition")
+FeaturePlot(sobject,c("Aif1","P2ry12","Cx3cr1","Ifnb1"))
+VlnPlot(sobject,c("Aif1","P2ry12","Cx3cr1","Ifnb1"))
+#cluster 16 = microglia
+```
+subset: 
+```{r}
+querydata = subset(sobject,subset = seurat_clusters != "8")
+```
+
+Add metadata somehow
+
+```{r}
+m = list.files(file.path(directory,folders[n],"metadata"))
+metadata = read.table(file.path(directory,folders[n],"metadata",m),sep = "\t",fill = T,header = T)
+metadata
+
+metadata = metadata[metadata$cellID %in% colnames(querydata),]
+identical(metadata$cellID,colnames(querydata))
+
+querydata@meta.data = cbind(querydata@meta.data,metadata)
+
+if (meta){
+  ids = as.character(querydata$orig.ident)
+  for (i in 1:nrow(metadata)){
+    ids[ids == metadata[i,"Name"]] = metadata[i,"ID"]
+  }
+  querydata$sampledescription = ids
+  table(querydata$sampledescription)
+  querydata = subset(querydata,subset = sampledescription %in% metadata$ID)
+}
+```
+
+```{r}
+#This doesn't work for all metadata files
+#Below was for cuprizone
+metadata = t(metadata)
+colnames(metadata) = metadata[1,]
+metadata = metadata[2:nrow(metadata),]
+head(metadata)
+metadata = metadata[colnames(querydata),]
+head(metadata)
+identical(rownames(metadata),colnames(querydata))
+querydata@meta.data = cbind(querydata@meta.data,metadata)
+table(querydata$region)
+table(querydata$treatment)
+querydata$sampledescription = querydata$treatment
+```
+Note that the above code will delete everything unless the metadata is formatted correctly. Here's an example of reformatting. 
+```{r}
+head(colnames(querydata))
+m = querydata@meta.data
+
+metadata = read.csv("/Users/whippoorwill/Desktop/revisions/sequencing/single cell models/frigerio/GSE127892_microglia.kw.meta.csv.gz",row.names = 1,stringsAsFactors = F)
+head(rownames(metadata))
+
+f2 = function(x){x = sub(' ','',x)}
+rownames(metadata) = sapply(rownames(metadata),f2)
+head(rownames(m))
+head(rownames(metadata))
+
+length(rownames(m))
+length(rownames(metadata))
+
+metadata = metadata[match(rownames(m),rownames(metadata)),]
+
+head(metadata)
+head(m)
+
+identical(rownames(m),rownames(metadata)) #must be true
+
+querydata@meta.data = metadata
+
+head(querydata@meta.data)
+head(m)
+querydata@meta.data$nCount_RNA = m$nCount_RNA
+querydata@meta.data$nFeature_RNA = m$nFeature_RNA
+```
+
+subset the dataset
+```{r}
+table(querydata$allCells.cluster.interpretation)
+querydata = subset(querydata,subset = allCells.cluster.interpretation == "microglia")
+
+querydata = subset(querydata,subset = Cx3cr1>0 | Aif1>0)
+VlnPlot(querydata2,c("Cx3cr1","Aif1"))
+
+querydata = subset(querydata,subset = age %in% c("Old","P100","P30","P4"))
+querydata$sampledescription = paste0(querydata$condition,"_",querydata$age)
+```
+
+
+Save the filtered object
+
+```{r}
+save(querydata,file = file.path(directory,folders[n],"seurat",paste0(folders[n],"filteredsubset.RData")))
+```
+
+
+
+Run Projection algorithm. First subset to 10,000 cells (or fewer)
+
+```{r}
+if (length(colnames(querydata))>8000){
+  cellnames = sample(colnames(querydata),8000)
+querydata = subset(querydata,cells = cellnames)
+}
+
+```
+
+Project on the reference
+
+```{r}
+query.projected <- make.projection(querydata, ref=ref,filter.cells = F,skip.normalize = F,human.ortho = F,query.assay = "RNA",seurat.k.filter = 100)
+```
+```{r}
+plot.projection(ref, query.projected,labels.col = "finalclusters") + ggtitle("all")
+
+DimPlot(query.projected,split.by = "seurat_clusters")
+```
+Label the cells that fall into my cluster 8 region: 
+
+```{r}
+umap = query.projected@reductions$umap@cell.embeddings
+cells = rownames(umap[umap[,"UMAP_1"]< -0.8 & umap[,"UMAP_2"]<6.5 & umap[,"UMAP_2"]> 3,])
+allcells = colnames(query.projected)
+allcells = rep("other",length(allcells))
+names(allcells) = colnames(query.projected)
+allcells[names(allcells) %in% cells] = "cluster8"
+query.projected$annotated = allcells
+
+
+umap = ref@reductions$umap@cell.embeddings
+cells = rownames(umap[umap[,"UMAP_1"]< -0.8 & umap[,"UMAP_2"]<6.5 & umap[,"UMAP_2"]> 3,])
+allcells = colnames(ref)
+allcells = rep("other",length(allcells))
+names(allcells) = colnames(ref)
+allcells[names(allcells) %in% cells] = "cluster8"
+ref$annotated = allcells
+
+DimPlot(ref,group.by = "annotated") #check that you have labelled the correct cells
+DimPlot(query.projected,group.by = "annotated")
+DimPlot(ref,group.by = "finalclusters")
+```
+```{r}
+x = query.projected$condition
+table(query.projected$condition,query.projected$annotated)
+x[x == "PS2/APP/P301L"] = "PS2_APP_P301L"
+x[x == "PS2/APP/P301L/TREM2KO"] = "PS2_APP_P301L_TREM2KO"
+query.projected$sampledescription = x
+```
+
+
+```{r}
+#query.projected$sampledescription = query.projected$orig.ident
+conditions = levels(as.factor(query.projected$condition))
+for (i in 1:length(conditions)){
+  pdf(file = file.path(directory,folders,"graphs",paste0(folders[n],"projected",conditions[i],"2.pdf")), width = 4, height = 4)
+  print(plot.projection(ref,query = subset(query.projected, subset = condition == conditions[i]),labels.col = "finalclusters") + ggtitle(conditions[i]))
+  dev.off()
+}
+```
+
+
+```{r}
+x = table(query.projected$annotated,query.projected$condition)
+x = rbind(x,"percent in cluster 8" = 100*(x[1,]/(x[2,]+ x[1,])))
+write.csv(x,file = file.path(directory,folders,"graphs",paste0(folders[n],"table2.csv")))
+x
+```
+
+```{r}
+save(query.projected,file = file.path(directory,folders[n],"projected",paste0(folders[n],"projected2.RData")))
+gc()
+```
+
+
+
+
+Plot projection of new data over the reference in UMAP space. The contour lines display the density of projected query cells onto the reference map.
+
+```{r}
+querycontrol = subset(query.projected,subset = orig.ident == "Control")
+queryDay37 = subset(query.projected,subset = orig.ident %in% c("Day3","Day7"))
+plot.projection(ref, query.projected,labels.col = "finalclusters") + ggtitle("all")
+plot.projection(ref, querycontrol,labels.col = "finalclusters") + ggtitle("Control")
+plot.projection(ref, queryDay37,labels.col = "finalclusters") + ggtitle("Day3 and Day 7 post infection")
+```
+
+```{r}
+table(query.projected$age)
+plot.projection(ref, query.projected,labels.col = "seurat_clusters") + ggtitle("all")
+query_young = subset(query.projected,subset = age == "Young")
+query_old = subset(query.projected,subset = age == "Old")
+plot.projection(ref, query_control,labels.col = "seurat_clusters") + ggtitle("Control")
+plot.projection(ref, query_old,labels.col = "seurat_clusters") + ggtitle("old")
+
+```
+
+Syage et al: subset cell types
+
+```{r}
+querydata = readRDS("/Users/whippoorwill/Desktop/AScombined_v10.7.rds")
+querydata = subset(querydata, subset = celltype %in% c("Mac1","Mac2","Mac3","Mac4","MG1","MG2","MG3","Cyc. MG"))
+DimPlot(querydata)
+
+querydata = subset(stevenssub2, subset = age %in% c("Old","P100","P30"))
+cells = sample(colnames(sobject),8000)
+querydata = subset(sobject,cells = cells)
+```
+cleaning data
+```{r}
+h = read.csv(gzfile("/Users/whippoorwill/Desktop/revisions/sequencing/single cell models/PS2APP and P301L/raw/GSM4658243_SAM24362767.csv.gz"),sep = ",")
+i = read.csv("/Users/whippoorwill/Desktop/revisions/sequencing/single cell models/5xFAD/raw/GSE148405_counts.csv.gz")
+h[1:30,1:5]
+h  = h[,c(2,8:ncol(h))]
+h[1:5,1:20]
+colnames(h)[1] = "GeneID"
+```
+
+Clean up many files at once
+```{r}
+library(org.Mm.eg.db)
+for (file in filelist){
+  h = read.table(gzfile(file.path(p,file)),sep = "\t")
+  h$GeneID = rownames(h)
+  ids=h$GeneID
+  fromKey="ENSEMBL"
+  toKey="SYMBOL"
+  db=org.Mm.eg.db
+  selRes <- AnnotationDbi::select(db, keys=ids, keytype=fromKey, columns=c(fromKey,toKey))
+  x=selRes[ match( ids, selRes[,1] ), 2 ]
+  h$GeneID[!is.na(x)] = x[!is.na(x)]
+
+#Remove duplicated genes: 
+#find genes that are represented more than once
+  dupgenes = h[duplicated(h$GeneID),"GeneID"]
+#make a list with each gene listed once
+  dupgenes = unique(dupgenes)
+
+  df = as.data.frame(h[1,])
+  df[,1:ncol(df)] = 0
+
+  i = 1
+  for (gene in dupgenes){
+    all = h[h$GeneID == gene,1:(ncol(h)-1)]
+    new = colSums(all)
+    df[i,"GeneID"] = gene
+    df[i,2:ncol(df)] = new
+    i = i+1
+  }
+
+  h = h[!h$GeneID %in% dupgenes,]
+  h = rbind(h,df)
+  write.csv(h,file = file.path(p,file),row.names = F)
+}
+
+```
+
+```{r}
+x = read.table(gzfile("/Users/whippoorwill/Desktop/GSE120744_series_matrix.txt.gz"),sep = "\t",fill = T,header = T,)
+dim(x)
+head(x)
+```
+```{r}
+gc() #garbage collection  - clears memory
+```
+
+for gunner: 
+```{r}
+umap = query.projected@reductions$umap@cell.embeddings
+cells = rownames(umap[umap[,"UMAP_1"]< 4 & umap[,"UMAP_2"]<5 & umap[,"UMAP_2"]> 2.5 & umap[,"UMAP_1"]> -1,])
+allcells = colnames(query.projected)
+allcells = rep("other",length(allcells))
+names(allcells) = colnames(query.projected)
+allcells[names(allcells) %in% cells] = "cluster3"
+query.projected$annotated = allcells
+
+
+umap = ref@reductions$umap@cell.embeddings
+cells = rownames(umap[umap[,"UMAP_1"]< 4 & umap[,"UMAP_2"]<5 & umap[,"UMAP_2"]> 2.5 & umap[,"UMAP_1"]> -1,])
+allcells = colnames(ref)
+allcells = rep("other",length(allcells))
+names(allcells) = colnames(ref)
+allcells[names(allcells) %in% cells] = "cluster3"
+ref$annotated = allcells
+
+
+DimPlot(ref,group.by = "annotated") #check that you have labelled the correct cells
+DimPlot(query.projected,group.by = "annotated")
+DimPlot(ref,group.by = "finalclusters")
+
+
+```
+
+```{r}
+x = table(query.projected$annotated,query.projected$sampledescription)
+x = rbind(x,"percent in cluster 3" = 100*(x[1,]/(x[2,]+ x[1,])))
+write.csv(x,file = file.path(directory,"graphs",paste0(folders[n],"table.csv")))
+x
+```
+Trying out the built in seurat analysis; 
+
+```{r}
+remotes::install_github("mojaveazure/seurat-disk")
+library(SeuratDisk)
+
+sobject = NormalizeData(sobject,assay = "RNA",scale.factor = 10000)
+sobject = ScaleData(sobject,features = VariableFeatures(sobject),vars.to.regress = c("nCount_RNA","sample_description"))
+
+DefaultAssay(sobject) = "RNA"
+
+anchors <- FindTransferAnchors(
+  reference = mgAVM02,
+  query = sobject,
+  normalization.method = "LogNormalize",
+  reference.reduction = "pca",
+  dims = 1:30
+)
+
+sobjectnew <- IntegrateEmbeddings(
+  anchorset = anchors,
+  reference = mgAVM02,
+  query = sobject, 
+  new.reduction.name = "refpca"
+)
+
+mgAVM02 <- RunUMAP(mgAVM02, dims = 1:30,reduction.name = "new.umap", 
+              reduction.key = "newUMAP_", return.model = TRUE)
+
+sobjectnew <- ProjectUMAP(
+  query = sobjectnew, 
+  query.reduction = "refpca", 
+  reference = mgAVM02, 
+  reference.reduction = "pca", 
+  reduction.model = "new.umap"
+)
+
+DimPlot(sobjectnew)
+DimPlot(mgAVM02)
+```
+Printing out source file sheets (for Nick in this case)
+```{r}
+#1. figure 4c
+load("/Volumes/Larisa/Sequencing Backup August 4th 2021/Nick/2_2020/Graphs_Analysis_August2020 mpeg only/Data/mpeg_juvenile.RData")
+
+genes = c("p2ry12","hexb","ptprc","mpeg1.1","ccl19a.1","csf1rb","mki67","pcna")
+data = GetAssayData(sobject,slot = "data")
+data = data[rownames(data) %in% genes,]
+dim(data)
+data = as.data.frame(data)
+
+#add cluster labels as a column
+identical(colnames(data),names(sobject$seurat_clusters))
+data = rbind(paste0("JM",sobject$seurat_clusters),data)
+rownames(data)[1] = "cluster"
+data = data[,order(data["cluster",])]
+dim(data)
+#write to a file
+write.csv(data,file = "~/Desktop/NickSource4C.csv")
+
+
+#2. figure 4f
+load("/Volumes/Larisa/Sequencing Backup August 4th 2021/Nick/2_2020/Graphs_Analysis_August2020 mpeg only/Data/mpegonly_all_harmony.RData")
+
+table(sobject$finalclusters)
+adultclusters = paste0("A",sobject$finalclusters)
+sobject$adultclusters = adultclusters
+table(sobject$adultclusters,sobject$age)
+
+write.csv(table(sobject$adultclusters,sobject$age),file = "~/Desktop/NickSource4f.csv")
+
+#3. figure 4g
+
+genes = c("caspb","alox5ap","lta4h","rab44","ier2a","hbegfb","jun","grn1","ccl19a.1","c1qc","pcna","ctsba","abca1a","mhc2b","cd74a")
+
+data = GetAssayData(sobject,slot = "scale.data")
+data = data[rownames(data) %in% genes,]
+data = as.data.frame(data)
+data = t(data)
+data = as.data.frame(data)
+
+if (identical(rownames(data),names(sobject$adultclusters))){data$cluster = sobject$adultclusters}
+
+data$cluster = as.factor(data$cluster)
+
+genes = colnames(data)[1:(ncol(data)-1)]
+avgdf = data.frame(row.names = levels(data$cluster))
+
+for (gene in genes){
+  genemeans = aggregate(get(gene) ~ cluster, data, mean)
+  avgdf[,gene] = genemeans$`get(gene)`
+}
+avgdf
+
+write.csv(avgdf,file = "~/Desktop/NickSource_avgExpression.csv")
+
+genes = colnames(data)[1:(ncol(data)-1)]
+pctdf = data.frame(row.names = levels(data$cluster))
+
+for (gene in genes){
+  genemeans = aggregate(get(gene) ~ cluster, data, function(x){100*length(x[x>0])/length(x)})
+  pctdf[,gene] = genemeans$`get(gene)`
+}
+pctdf
+write.csv(pctdf,file = "~/Desktop/NickSource_PctExpressionOver0.csv")
+
+#3. figure S2c
+load("/Volumes/Larisa/Sequencing Backup August 4th 2021/Nick/2_2020/Graphs_Analysis_August2020/Data/strict_juvenile.RData")
+genes = c("ccr9a","il2rb","bcl2l10","il13","eomesa","cd4-1","lck","hexb","p2ry12","mpeg1.1")
+
+data = GetAssayData(sobject,slot = "scale.data")
+data = data[rownames(data) %in% genes,]
+data = as.data.frame(data)
+data = t(data)
+data = as.data.frame(data)
+
+if (identical(rownames(data),names(sobject$seurat_clusters))){data$cluster =paste0("J", sobject$seurat_clusters)}
+
+data$cluster = as.factor(data$cluster)
+
+genes = colnames(data)[1:(ncol(data)-1)]
+avgdf = data.frame(row.names = levels(data$cluster))
+
+for (gene in genes){
+  genemeans = aggregate(get(gene) ~ cluster, data, mean)
+  avgdf[,gene] = genemeans$`get(gene)`
+}
+avgdf
+
+write.csv(avgdf,file = "~/Desktop/NickSource_avgExpression.csv")
+
+genes = colnames(data)[1:(ncol(data)-1)]
+pctdf = data.frame(row.names = levels(data$cluster))
+
+for (gene in genes){
+  genemeans = aggregate(get(gene) ~ cluster, data, function(x){100*length(x[x>0])/length(x)})
+  pctdf[,gene] = genemeans$`get(gene)`
+}
+pctdf
+write.csv(pctdf,file = "~/Desktop/NickSource_PctExpressionOver0.csv")
+
+#for each cluster: calculate the percent of cells expressing the gene and also the average expression for that cluster
+
+#figure 4b: Eigengene enrichment
+load("/Volumes/Larisa/Sequencing Backup August 4th 2021/Nick/2_2020/Graphs_Analysis_August2020 mpeg only/Data/mpeg_juvenilewitheigenegenes.RData")
+
+#print out the umap coordinates, juvenile clusters, and eigenegenes for all cells: 
+n = sobject@reductions$umap@cell.embeddings
+
+meta = sobject@meta.data
+colnames(meta)
+meta = meta[,c("seurat_clusters","HBe","OTe","MBe")]
+head(meta)
+identical(rownames(meta),rownames(n))
+
+meta = cbind(meta,n)
+head(meta)
+meta$seurat_clusters = paste0("JM",meta$seurat_clusters)
+head(meta)
+meta = meta[order(meta$seurat_clusters),]
+head(meta)
+
+write.csv(meta,file = "~/Desktop/NickSourceEigengene.csv")
+```
+
+DAM signature vs IL33
+```{r}
+dam = read.csv("/Users/whippoorwill/Dropbox (Anna Molofsky Lab)/2020-Leah-barrelCortex/Manuscript data/Glia RNASeq/P5_P7 MG rnaseq/DAM:PAM comparison/mmc3.csv")
+dam = dam[order(dam$Fold.change..DAM.to.homeostatic.microglia.,decreasing = T),]
+dam = dam$Gene.name
+dam = dam[1:100]
+il33 = read.csv("/Users/whippoorwill/Desktop/il33genes.csv",header = F)
+il33 = il33$V1
+il33 = il33[1:100]
+dam = dam[1:100]
+
+length(il33)
+length(dam)
+length(dam[dam %in% il33])
+dam[dam %in% il33]
+
+#Sfig2d-h
+
+load("/Volumes/Larisa/Sequencing Backup August 4th 2021/Nick/2_2020/Graphs_Analysis_August2020 mpeg only/Data/mpeg_juvenile.RData")
+
+#save pct. mito, ncount, replicates, mpeg1.1, resolution0.1,0.3,0.5
+sobject = FindClusters(sobject,res = c(0.1,0.5))
+n = sobject@reductions$umap@cell.embeddings
+
+meta = sobject@meta.data
+colnames(meta)
+meta = meta[,c(4,2,8,29,9,30)]
+
+genes = c("mpeg1.1","flt3","grn1","hexb","p2ry12","csf1ra","cd63","mrc1b","apoc1","apoc4","lyve1b")
+mpeg = GetAssayData(sobject,slot = "data")[genes,]
+dim(mpeg)
+mpeg = as.data.frame(mpeg)
+mpeg = t(mpeg)
+
+meta = cbind(n,meta,mpeg)
+
+
+write.csv(meta,file = "~/Desktop/NickSourceDataJM.csv")
+
+#Fig S2i - cluster 0 vs 1 for resolution 0.3
+c1v0 = FindMarkers(sobject,ident.1 = "1",ident.2 = "0",group.by = "RNA_snn_res.0.3",features = rownames(sobject),logfc.threshold = 0,min.pct = 0.1,assay = "RNA",slot = "counts",test.use = "MAST")
+
+write.csv(c1v0,file = "~/Desktop/NickSourceData1v0.csv")
+
+
+#Figure S6
+sobject$seurat_clusters = sobject$RNA_snn_res.0.3
+
+columns = c()
+for (i in 1:16){
+  columns[i] = paste0("humanfetal",i)
+}
+sobject$seurat_clusters = as.factor(sobject$seurat_clusters)
+t = sobject@meta.data[,c(columns,"seurat_clusters")]
+
+t$seurat_clusters = droplevels(t$seurat_clusters)
+r = levels(t$seurat_clusters)
+c = colnames(t)[1:16]
+est = matrix(data = rep(0,length(r)*length(c)), nrow = length(r),ncol = length(c),dimnames = list(r,c))
+stat = matrix(data = rep(0,length(r)*length(c)), nrow = length(r),ncol = length(c),dimnames = list(r,c))
+pval = matrix(data = rep(0,length(r)*length(c)), nrow = length(r),ncol = length(c),dimnames = list(r,c))
+for (i in 1:16){
+  column = paste0("humanfetal",i)
+  for (k in 0:5){
+    x = t
+    x$seurat_clusters = as.character(x$seurat_clusters)
+    x$seurat_clusters[x$seurat_clusters !=k] = "all"
+    n = wilcox.test(get(column) ~ seurat_clusters,data = x,conf.int = T)
+    est[k+1,i] = n$estimate 
+    stat[k+1,i] = n$statistic/(1e5)
+    pval[k+1,i] = n$p.value
+  }
+}
+
+write.csv(est,file = "~/Desktop/NickSourceDataEstimatedEnrichment.csv")
+write.csv(pval,file = "~/Desktop/NickSourceDatapval.csv")
+
+```
+
+
