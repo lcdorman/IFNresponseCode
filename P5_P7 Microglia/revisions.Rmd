@@ -659,7 +659,7 @@ dev.off()
 
 save(mgAVM02,file = "~/Desktop/Sequencing/LD_AVM02/Data/Seurat/mgAVM02_donotdelete.RData")
 ```
-4. Analyze Syage, Frigerio datasets, + any models discussed that have scRNAseq datasets (lol I took those out before...)
+4. Analyze Syage, Frigerio datasets, + any models discussed that have scRNAseq datasets 
 ProjectTILs to overlay my single cell with other people's data
 
 ```{r}
